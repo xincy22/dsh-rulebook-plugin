@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Standing rulebook",
+    "description": "Keeps three layers of user-written standing rules (global, workspace, session) in the system prompt of every model step. Rules are written only by the user through the /rule slash command; the model has no tool that can change them.",
+    "detail": "README.md"
+  }
+}

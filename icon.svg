@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Standing rulebook">
+  <rect x="11" y="7" width="42" height="50" rx="7" fill="#f7f3ea" stroke="#2f2a24" stroke-width="3"/>
+  <path d="M23 22h18M23 32h18M23 42h11" stroke="#b85450" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="43" cy="42" r="3" fill="#2f2a24"/>
+</svg>

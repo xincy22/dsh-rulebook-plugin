@@ -1,0 +1,35 @@
+- insert:
+    - id: rulebook
+      name: 'dsh-rulebook'
+      config:
+        # 规则根目录。默认 <DSH_HOME>/rulebook（DSH_HOME 未设置时取 ~/.dsh）。
+        # 绝对路径直接用；~ 开头展开为用户主目录；相对路径按插件目录解析。
+        # 想让全局层只对当前 profile 可见，把这里指向 <DSH_PROFILE_DIR>/rulebook。
+        rulebookDir: ''
+        # 单层正文注入的字符上限，超出截断并标注。
+        maxChars: 3000
+        # 三层正文合计注入的字符上限。超出的按各层正文长度按比例截断，
+        # 每层保底 200 字符；这一步是给注入预算算总账。
+        totalMaxChars: 6000
+        # 提示 section 排序。700 落在 TEAM_POLICY(600) 与 PTC_ONLY(800) 之间。
+        order: 700
+        # 是否注入工作区层 / 本会话层。
+        includeWorkspaceRules: true
+        includeSessionRules: true
+        # 子智能体会话是否也注入。
+        includeSubagents: true
+        # 斜杠命令名（必须匹配 ^[a-z][a-z0-9_-]*$）。
+        commandName: rule
+        # 是否注册 tools.guard 兜底。
+        guardEnabled: true
+        # guard 覆盖的工具名。
+        # 不含 run_code：PTC 的子调用同样过 guard（tools/pipeline.ts 的 prepare
+        # 里调 checkGuards），而按代码文本匹配会误伤读取、注释与日志输出。
+        guardedTools:
+          - write
+          - edit
+          - pwsh
+          - terminal_send
+        # 会话被删除时是否清掉它的会话规则文件。默认关：误删用户数据不可逆，
+        # 而残留的会话规则文件只在那个会话 id 再次成为当前会话时才会被读到。
+        cleanupSessionFiles: false

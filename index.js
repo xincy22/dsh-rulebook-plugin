@@ -31,6 +31,8 @@ import { fileURLToPath } from 'node:url'
 export const name = 'dsh-rulebook'
 
 export const inject = ['commands', 'sessions', 'systemPrompt', 'tools']
+// llm 不列入 inject：用 ctx.get('llm') 可选读取，服务缺席时按「调用失败」拒绝写入，
+// 不让缺少模型服务的 profile 在加载阶段就失败。
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -50,6 +52,23 @@ const FOOTER = [
 const TRUNCATED_NOTE = '…（本层规则过长，已截断）'
 /** 分配总预算时每层的保底字符数。 */
 const MIN_LAYER_CHARS = 200
+
+/** AI 整理指令：作为新的一轮 user 消息追加到当前对话末尾。 */
+const REWRITE_INSTRUCTION = [
+  '现在请把用户刚才说的这句话整理成一条「长期规则」。',
+  '',
+  '要求：',
+  '1. 结合上面的对话理解这句话指的是什么，补上必要的限定或语境，让脱离对话的人也能看懂；',
+  '2. 理顺措辞，改成一条清晰、可执行的陈述；',
+  '3. 不要扩写：只允许比原话稍长一点，一句话能说清就不要写多句，绝不写成段落；',
+  '4. 只输出整理后的那一条规则本身，不要解释、不要引号、不要前后缀、不要列表符号；',
+  '5. 用和原话相同的语言。',
+  '',
+  '用户刚才说的原话：',
+].join('\n')
+
+/** 整理结果的上限：过长视为模型没听懂，按失败处理。 */
+const REWRITE_MAX_CHARS = 200
 
 const DEFAULTS = {
   rulebookDir: '',
@@ -488,6 +507,65 @@ export function apply(ctx, config) {
     return out
   }
 
+  /**
+   * 用当前会话模型把用户原话整理成一条规则。
+   * 复用当前对话做前缀：messages = session.deriveMessages() + 一条整理指令，
+   * header.config（provider/model）原样沿用，system 与历史消息不变，最大化 KV 命中。
+   * 失败一律抛出，由调用方拒绝写入。
+   * @returns {Promise<string>} 整理后的单行规则
+   */
+  async function rewriteRule(text, agent, signal) {
+    const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined
+    if (!llm || typeof llm.stream !== 'function') {
+      throw new Error('模型服务不可用，无法整理规则')
+    }
+    const session = sessionOf(agent)
+    if (!session || typeof session.deriveMessages !== 'function') {
+      throw new Error('当前会话不可读，无法整理规则')
+    }
+    const header = typeof session.requestHeader === 'function' ? session.requestHeader() : undefined
+    const config = header && header.config
+    if (!config || !config.provider || !config.model) {
+      throw new Error('无法确定当前会话的模型，无法整理规则')
+    }
+    // deriveMessages 返回完整对话（首条通常带 system 文本），作为前缀原样复用。
+    const history = Array.isArray(session.deriveMessages()) ? session.deriveMessages() : []
+    const instruction = { role: 'user', content: [{ type: 'text', text: REWRITE_INSTRUCTION + '\n' + text }] }
+    const messages = [...history, instruction]
+    let out = ''
+    for await (const chunk of llm.stream({
+      provider: config.provider,
+      model: config.model,
+      messages,
+      ...config.reasoningEffort === void 0 ? {} : { reasoningEffort: config.reasoningEffort },
+      maxTokens: 256,
+      ...signal === void 0 ? {} : { signal },
+    })) {
+      if (signal && signal.aborted) throw new Error('整理被取消')
+      if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+        out += chunk.text
+        continue
+      }
+      if (chunk && chunk.type === 'block-end' && chunk.block && chunk.block.type === 'text' && typeof chunk.block.text === 'string') {
+        out += chunk.block.text
+        continue
+      }
+      if (chunk && chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
+        const failure = chunk.reason.failure || {}
+        throw new Error('整理失败：' + (failure.message || failure.code || '模型错误'))
+      }
+    }
+    const cleaned = out
+      .replace(/^\s*[\-\*]\s+/, '')
+      .replace(/^["'「『]|["'」』]$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!cleaned) throw new Error('整理结果为空')
+    if (cleaned.length > REWRITE_MAX_CHARS) throw new Error('整理结果过长，已拒绝写入')
+    if (/\n/.test(out.trim())) throw new Error('整理结果不是一条规则，已拒绝写入')
+    return cleaned
+  }
+
   function addRule(file, text) {
     const rule = text.trim().replace(/^[-*]\s+/, '')
     if (!rule) return { error: '规则文本不能为空' }
@@ -529,7 +607,7 @@ export function apply(ctx, config) {
       description: '维护长期规则：全局 / 工作区 / 本会话三层，规则每步注入模型提示。',
       input: { hint: 'add [-g|-w|-s] <文本> | list | rm <ID> [ID...] | help' },
       recordInput: false,
-      handler: (invocation) => {
+      handler: async (invocation) => {
         const raw = String(invocation && invocation.rawInput ? invocation.rawInput : '').trim()
         if (!raw) return { kind: 'error', text: HELP }
         const m = /^(\S+)\s*([\s\S]*)$/.exec(raw)
@@ -570,8 +648,18 @@ export function apply(ctx, config) {
           if (!rest) return { kind: 'error', text: `缺少规则文本。\n\n${HELP}` }
           const target = scopeOf(session, cwd, scope)
           if (target.error) return { kind: 'error', text: target.error }
+          // 先用当前会话模型整理原话；失败一律拒绝写入（不写未经整理的原文）。
+          let finalText
           try {
-            const result = addRule(target.file, rest)
+            finalText = await rewriteRule(rest, agent, invocation && invocation.signal)
+          } catch (error) {
+            return {
+              kind: 'error',
+              text: `整理规则失败，未写入：${error && error.message ? error.message : String(error)}`,
+            }
+          }
+          try {
+            const result = addRule(target.file, finalText)
             if (result.error) return { kind: 'error', text: result.error }
             if (result.duplicate) {
               return { kind: 'success', text: `已存在，未重复写入：${target.file}` }
@@ -581,7 +669,7 @@ export function apply(ctx, config) {
             const id = ruleIdOf(layerName, result.rule)
             return {
               kind: 'success',
-              text: `已写入${target.label}：${target.file}\n  ID ${id}（该层现有 ${count} 条规则）`,
+              text: `已写入${target.label}：${target.file}\n  整理后：${result.rule}\n  ID ${id}（该层现有 ${count} 条规则）`,
             }
           } catch (error) {
             return {

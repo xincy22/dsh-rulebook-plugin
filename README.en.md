@@ -35,6 +35,14 @@ Files are plain Markdown: one rule per line prefixed with `- `. Lines starting w
 | `/rule rm <ID> [ID...]` | delete one or more rules by ID |
 | `/rule help` | print help |
 
+### AI rewriting
+
+`/rule add` does not store your raw words. The plugin first asks the **current session model** to rewrite them into one clean rule: it uses the current conversation to resolve references like "this" or "that", adds only the context needed to stand alone, and tightens the wording. It never expands a sentence into a paragraph — the result is just slightly longer at most.
+
+The rewrite reuses the current conversation as the request prefix: messages from `session.deriveMessages()` are kept verbatim and a single rewrite instruction is appended. The system prompt and provider/model are inherited from the current session, so the shared prefix stays cache-hot.
+
+If the rewrite fails (no model service, auth failure, rate limit, timeout, empty or overlong output), the write is **rejected with an error** — unrewritten raw text is never stored. The rewritten text is shown in the receipt so you can catch a bad interpretation immediately.
+
 Each rule has a content-derived ID like `g:3f2a1c`: the first letter is the layer (`g` global / `w` workspace / `s` session), followed by the first 6 hex digits of `sha256(layer + normalized-text)`. IDs are **not stored in files**; the files stay clean text that you can edit by hand. An ID changes when the text changes. `add` and `list` both show IDs.
 
 `rm` accepts only IDs. Substring matching was removed on purpose: one fragment could match several rules, and the result would not tell you which ones were deleted.
@@ -72,6 +80,8 @@ The guard is string matching, not a security boundary: it cannot stop variable-b
 ```
 node test/smoke.mjs
 ```
+
+57 assertions with a fake ctx: commands, injection, guard, AI rewrite (prefix reuse, failure rejection), and budget regressions. No host required.
 
 ## Design
 

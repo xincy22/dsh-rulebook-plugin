@@ -102,7 +102,7 @@ C:/work/dsh/demo
 |---|---|---|
 | `rulebookDir` | `$DSH_HOME/rulebook` | 规则根目录。绝对路径直接用；`~` 展开为用户主目录；相对路径按插件目录解析。 |
 | `maxChars` | `3000` | 单层正文注入的字符上限，超出截断并标注。 |
-| `totalMaxChars` | `6000` | 三层正文合计上限。超出的按各层正文长度按比例截断，每层保底 200 字符。 |
+| `totalMaxChars` | `6000` | 三层正文合计上限。超出的按各层正文长度按比例截断，每层保底不超过 200 字符，且受单层上限与总预算均分约束。 |
 | `order` | `700` | 提示 section 排序。700 落在 `TEAM_POLICY`(600) 与 `PTC_ONLY`(800) 之间。 |
 | `includeWorkspaceRules` | `true` | 是否注入工作区层。 |
 | `includeSessionRules` | `true` | 是否注入本会话层。 |
@@ -181,8 +181,8 @@ dsh-rulebook：拒绝访问规则目录（~/.dsh/rulebook）。规则文件只�
    两种模式的差别只在于模型如何到达那几个工具：原生模式下直接调用；PTC / Code Mode 下经 `run_code` 间接调用。PTC 的子调用会重新进入调度器的 `prepare`，其中就有 `checkGuards`，所以拒绝同样生效。
 
 3. **改文件下一次请求就更新**：用记事本改 `<rulebookDir>/global.md` 加一行，不重启、不重载，直接发一句话，模型应看到新规则。再跑一次上面的 `verify-injection.mjs`，注入片段里应出现新行。
-4. **命令面**：`/rule help`；`/rule add -w/-s/（缺省）` 各写一层；`/rule list` 看三层与序号；`/rule rm 1`、`/rule rm -w 片段`、`/rule rm 片段`；在文件里手写一行 `# 我的注释` 后再执行一次 `/rule rm`，确认注释行被保留；同一条规则连打两次 `/rule add`，确认第二次提示「已存在」。
-5. **离线自检**（不需要宿主）：`node test/smoke.mjs` 用假 ctx 驱动命令、注入与 guard，共 29 项断言。
+4. **命令面**：`/rule help`；`/rule add -w/-s/（缺省）` 各写一层；`/rule list` 看三层与每条的 ID；用 list 里的 ID 执行 `/rule rm g:3f2a1c`，再执行一次确认报「未找到」；一次给多个 ID 删多条；`/rule rm 某个词` 应报「无效的规则 ID」（不做片段匹配）；在文件里手写一行 `# 我的注释` 后再 `/rm`，确认注释行被保留；同一条规则连打两次 `/rule add`，确认第二次提示「已存在」。
+5. **离线自检**（不需要宿主）：`node test/smoke.mjs` 用假 ctx 驱动命令、注入与 guard，共 49 项断言。
 
 ---
 

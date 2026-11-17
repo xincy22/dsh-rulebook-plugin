@@ -30,6 +30,11 @@ function mockLlm(mode = 'echo', sink = null) {
         yield { type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', message: 'bad key' } } }
         return
       }
+      if (mode === 'reasoning-only') {
+        yield { type: 'reasoning-delta', text: 'thinking...' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
       const last = req.messages[req.messages.length - 1]
       const text = (last.content || []).map((b) => b.text || '').join('\n')
       const raw = text.split('\n').filter(Boolean).pop() || ''
@@ -145,6 +150,22 @@ console.log('2. AI 整理：前缀复用 / 失败拒绝')
   const app = make({}, 'empty')
   const r = await app.run('add 记一条规则')
   check('整理结果为空时拒绝写入', r.kind === 'error', JSON.stringify(r))
+  rmSync(app.dir, { recursive: true, force: true })
+}
+{
+  const app = make({}, 'reasoning-only')
+  const r = await app.run('add 记一条规则')
+  check('只有 reasoning 没有 text 时拒绝写入', r.kind === 'error', JSON.stringify(r))
+  rmSync(app.dir, { recursive: true, force: true })
+}
+{
+  const sink = {}
+  const app = make({}, 'echo', sink)
+  const r = await app.run('add 记一条规则')
+  const req = sink.req
+  check('整理请求不继承高推理档', req && (req.reasoningEffort === 'low' || req.reasoningEffort === 'light' || req.reasoningEffort === undefined), JSON.stringify(req && req.reasoningEffort))
+  check('整理请求给足输出预算', req && req.maxTokens >= 512, JSON.stringify(req && req.maxTokens))
+  check('回执包含整理后文本', r.text.includes('整理后：'), r.text)
   rmSync(app.dir, { recursive: true, force: true })
 }
 {

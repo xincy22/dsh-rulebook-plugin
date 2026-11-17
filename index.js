@@ -537,10 +537,9 @@ export function apply(ctx, config) {
       provider: config.provider,
       model: config.model,
       messages,
-      // 沿用当前会话的推理档位（各模型档位名不统一，不硬编码）；只放宽输出预算，
-      // 避免高推理模型把 token 全花在 reasoning 后没有正文输出。
+      // 沿用当前会话的推理档位（各模型档位名不统一，不硬编码）。
+      // 不设 maxTokens：用模型默认输出预算，避免高推理模型把小额 token 全花在 reasoning 后没有正文输出。
       ...config.reasoningEffort === void 0 ? {} : { reasoningEffort: config.reasoningEffort },
-      maxTokens: 2048,
       ...signal === void 0 ? {} : { signal },
     })) {
       if (signal && signal.aborted) throw new Error('整理被取消')

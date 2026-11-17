@@ -164,7 +164,7 @@ console.log('2. AI 整理：前缀复用 / 失败拒绝')
   const r = await app.run('add 记一条规则')
   const req = sink.req
   check('整理请求不继承高推理档', req && (req.reasoningEffort === 'low' || req.reasoningEffort === 'light' || req.reasoningEffort === undefined), JSON.stringify(req && req.reasoningEffort))
-  check('整理请求给足输出预算', req && req.maxTokens >= 512, JSON.stringify(req && req.maxTokens))
+  check('整理请求给足输出预算', req && req.maxTokens >= 2048, JSON.stringify(req && req.maxTokens))
   check('回执包含整理后文本', r.text.includes('整理后：'), r.text)
   rmSync(app.dir, { recursive: true, force: true })
 }

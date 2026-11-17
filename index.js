@@ -540,7 +540,7 @@ export function apply(ctx, config) {
       // 整理只要一句话，不继承会话的高推理档：高推理模型会把 256 token 全花在 reasoning 上，
       // 导致 text 输出为空。这里显式压到 low，并给足输出预算。
       reasoningEffort: 'low',
-      maxTokens: 1024,
+      maxTokens: 2048,
       ...signal === void 0 ? {} : { signal },
     })) {
       if (signal && signal.aborted) throw new Error('整理被取消')

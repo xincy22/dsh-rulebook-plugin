@@ -9,7 +9,7 @@ This plugin and `dsh-hindsight` occupy different seams: Hindsight is a semantic 
 ## Install
 
 ```
-dsh plugin --profile desktop add link:/path/to/dsh-rulebook-plugin
+dsh plugin --profile desktop add github:xincy22/dsh-rulebook-plugin
 ```
 
 Open a new session and run `/rule list`.
@@ -41,7 +41,19 @@ Files are plain Markdown: one rule per line prefixed with `- `. Lines starting w
 
 The rewrite reuses the current conversation as the request prefix: messages from `session.deriveMessages()` are kept verbatim and a single rewrite instruction is appended. The system prompt and provider/model are inherited from the current session, so the shared prefix stays cache-hot.
 
-If the rewrite fails (no model service, auth failure, rate limit, timeout, empty or overlong output), the write is **rejected with an error** — unrewritten raw text is never stored. The rewritten text is shown in the receipt so you can catch a bad interpretation immediately.
+The rewrite runs **as a background job**. `/rule add` returns from its handler immediately, so the composer is never locked while the model works; when the rewrite and the write finish, the result arrives in the conversation as a `[rule] …` message:
+
+```
+[rule] wrote the global layer: ~/.dsh/rulebook/global.md
+  rewritten: commits and confirmations need my explicit approval
+  ID g:3f2a1c (this layer now has 3 rules)
+```
+
+The job shows up in the host's job roster (kind `rule-rewrite`) and can be stopped. There is a very small window between a kill and the write in which the rule may already have landed; run `/rule list` if unsure.
+
+If the rewrite fails (no model service, auth failure, rate limit, timeout, empty or overlong output), the write is **rejected with an error** — unrewritten raw text is never stored, and the failure arrives the same `[rule]` way.
+
+Set `backgroundRewrite: false` to fall back to the synchronous path: same behaviour, but the composer stays locked until the command settles. Only slim deployments without the `jobs` / `agents` services need that.
 
 Each rule has a content-derived ID like `g:3f2a1c`: the first letter is the layer (`g` global / `w` workspace / `s` session), followed by the first 6 hex digits of `sha256(layer + normalized-text)`. IDs are **not stored in files**; the files stay clean text that you can edit by hand. An ID changes when the text changes. `add` and `list` both show IDs.
 
@@ -64,6 +76,7 @@ Config lives in `cordis.patch.yml`:
 | `guardEnabled` | `true` | register the tool guard |
 | `guardedTools` | `["write","edit","pwsh","terminal_send"]` | tools checked by the guard |
 | `cleanupSessionFiles` | `false` | clean session rule files when a session is deleted |
+| `backgroundRewrite` | `true` | run the `/rule add` rewrite as a background job so the command returns at once; `false` restores the synchronous path that locks the composer |
 
 When `includeWorkspaceRules` or `includeSessionRules` is false, `add -w` / `add -s` fail with an explanation instead of silently writing a rule the model will never see.
 

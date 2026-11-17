@@ -1,6 +1,6 @@
 {
   "name": "dsh-rulebook",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "常驻规则（人工写入通道）：三层规则文件每步注入系统提示词，写入只走 /rule 斜杠命令，模型侧没有写入通道。",
   "exports": {

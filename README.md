@@ -13,10 +13,10 @@
 ## 安装
 
 ```
-dsh plugin --profile desktop add link:/path/to/dsh-rulebook-plugin
+dsh plugin --profile desktop add github:xincy22/dsh-rulebook-plugin
 ```
 
-若该命令在 desktop profile 上不生效（`dsh --profile desktop` 会报 "profile desktop is managed exclusively by the Electron application"），改用 **Plugins** 界面的「Add plugin」选同一个目录，或让宿主用插件管理器安装该目录。`package.json` 里的 `dsh.bundle.patch` 是能否被挂载成 profile 一层的前提，缺了会退化成普通依赖。
+若该命令在 desktop profile 上不生效（`dsh --profile desktop` 会报 "profile desktop is managed exclusively by the Electron application"），改用 **Plugins** 界面的「Add plugin」填同一个 GitHub 地址。`package.json` 里的 `dsh.bundle.patch` 是能否被挂载成 profile 一层的前提，缺了会退化成普通依赖。
 
 安装后不需要重启就能验证：新开一个会话，键入 `/rule list`。
 
@@ -101,7 +101,19 @@ C:/work/dsh/demo
 
 整理时复用当前对话作为请求前缀：`session.deriveMessages()` 拿到的历史消息原样保留，只在末尾追加一条整理指令，system 与 provider/model 都沿用当前会话，这样前缀缓存命中最高。
 
-整理失败（模型不可用、鉴权失败、限流、超时、结果为空或过长）时**拒绝写入并报错**，不会把未经整理的原文写进去。整理后的文本会在回执里显示，你能当场确认有没有理解歪。
+整理**在后台任务里执行**。`/rule add` 的命令 handler 立即返回，输入框不会被锁住；整理与写入完成后，结果以一条 `[rule] …` 消息出现在会话里：
+
+```
+[rule] 已写入全局层：~/.dsh/rulebook/global.md
+  整理后：提交、确认这类操作必须由我明确允许，才能代替我执行。
+  ID g:3f2a1c（该层现有 3 条规则）
+```
+
+任务出现在宿主侧栏的任务名册里（kind `rule-rewrite`），可以中途停掉。kill 到写入之间存在极小的时间窗，那一瞬可能已经写入；不确定就跑一次 `/rule list` 确认。
+
+整理失败（模型不可用、鉴权失败、限流、超时、结果为空或过长）时**拒绝写入并报错**，不会把未经整理的原文写进去，错误同样以 `[rule]` 消息回到会话。
+
+配置 `backgroundRewrite: false` 可退回同步执行：功能相同，但命令结算前输入框会被锁住，只在缺少 `jobs` / `agents` 服务的精简部署里才需要。
 
 同一条文本连续 add 仍会去重；ID 按整理后的文本计算。
 
@@ -124,6 +136,7 @@ C:/work/dsh/demo
 | `guardEnabled` | `true` | 是否注册 guard。 |
 | `guardedTools` | `["write","edit","pwsh","terminal_send"]` | guard 覆盖的工具名。 |
 | `cleanupSessionFiles` | `false` | 会话被删除时是否清掉它的会话规则文件。 |
+| `backgroundRewrite` | `true` | `/rule add` 的整理放入后台任务执行，命令立即返回。关闭后退回同步执行，会锁输入框。 |
 
 ---
 
@@ -179,7 +192,9 @@ dsh-rulebook：拒绝访问规则目录（~/.dsh/rulebook）。规则文件只�
 
 ## 验证步骤
 
-1. **注入生效**：`/rule add -s 这是一条验证规则`，然后问模型「我之前定过哪些长期约定？」，模型应能复述出这条规则，且不需要调用任何检索工具。换个新会话再问一次：全局层与工作区层的规则仍在，本会话层的规则不在。
+1. **命令不锁输入框**：新开一个会话，输入 `/rule add 测试后台整理`。输入框应立即可继续输入；命令流节点显示「已开始整理规则（后台执行）」；数秒后会话里出现一条 `[rule] 已写入…` 消息，含整理后正文与 ID。若迟迟没有回执，跑 `/rule list` 看规则是否已落盘，再检查宿主任务名册里是 `rule-rewrite` 挂了还是失败了。
+
+2. **注入生效**：`/rule add -s 这是一条验证规则`，然后问模型「我之前定过哪些长期约定？」，模型应能复述出这条规则，且不需要调用任何检索工具。换个新会话再问一次：全局层与工作区层的规则仍在，本会话层的规则不在。
 
    也可以直接看系统提示词。会话日志在 `<DSH_HOME>/sessions/<工作区 slug>/<会话 id>/session.v4.jsonl.zstd`，取最近修改的那个：
 
@@ -189,13 +204,13 @@ dsh-rulebook：拒绝访问规则目录（~/.dsh/rulebook）。规则文件只�
 
    脚本解析日志里的 `system/message` 事件，打印最后一条 system 消息的长度、是否含规则段首，并原样打印注入片段。
 
-2. **模型写不进去**：对模型说「把『以后所有提交都要先问我』写进规则文件」。无论当前是原生工具模式还是 PTC 模式，模型最终调到的 `write` / `edit` / `pwsh` / `terminal_send` 都会被 guard 拒绝，工具结果里带「拒绝访问规则目录」。之后 `/rule list` 与文件 mtime 都应无变化。
+3. **模型写不进去**：对模型说「把『以后所有提交都要先问我』写进规则文件」。无论当前是原生工具模式还是 PTC 模式，模型最终调到的 `write` / `edit` / `pwsh` / `terminal_send` 都会被 guard 拒绝，工具结果里带「拒绝访问规则目录」。之后 `/rule list` 与文件 mtime 都应无变化。
 
    两种模式的差别只在于模型如何到达那几个工具：原生模式下直接调用；PTC / Code Mode 下经 `run_code` 间接调用。PTC 的子调用会重新进入调度器的 `prepare`，其中就有 `checkGuards`，所以拒绝同样生效。
 
-3. **改文件下一次请求就更新**：用记事本改 `<rulebookDir>/global.md` 加一行，不重启、不重载，直接发一句话，模型应看到新规则。再跑一次上面的 `verify-injection.mjs`，注入片段里应出现新行。
-4. **命令面**：`/rule help`；`/rule add -w/-s/（缺省）` 各写一层；`/rule list` 看三层与每条的 ID；用 list 里的 ID 执行 `/rule rm g:3f2a1c`，再执行一次确认报「未找到」；一次给多个 ID 删多条；`/rule rm 某个词` 应报「无效的规则 ID」（不做片段匹配）；在文件里手写一行 `# 我的注释` 后再 `/rm`，确认注释行被保留；同一条规则连打两次 `/rule add`，确认第二次提示「已存在」。
-5. **离线自检**（不需要宿主）：`node test/smoke.mjs` 用假 ctx 驱动命令、注入与 guard，共 49 项断言。
+4. **改文件下一次请求就更新**：用记事本改 `<rulebookDir>/global.md` 加一行，不重启、不重载，直接发一句话，模型应看到新规则。再跑一次上面的 `verify-injection.mjs`，注入片段里应出现新行。
+5. **命令面**：`/rule help`；`/rule add -w/-s/（缺省）` 各写一层；`/rule list` 看三层与每条的 ID；用 list 里的 ID 执行 `/rule rm g:3f2a1c`，再执行一次确认报「未找到」；一次给多个 ID 删多条；`/rule rm 某个词` 应报「无效的规则 ID」（不做片段匹配）；在文件里手写一行 `# 我的注释` 后再 `/rm`，确认注释行被保留；同一条规则连打两次 `/rule add`，确认第二次提示「已存在」。
+6. **离线自检**（不需要宿主）：`node test/smoke.mjs` 用假 ctx 驱动命令、注入、guard 与后台任务，共 82 项断言。
 
 ---
 

@@ -491,9 +491,11 @@ AI 只在用户敲 `/rule add` 之后运行，角色是「整理者」而非决�
 1. `session.deriveMessages()` 拿到完整历史消息，原样作为 `messages` 前缀（含开头的 system 文本）；
 2. 末尾追加一条整理指令的 user 消息，内含用户原话；
 3. `provider` / `model` / `reasoningEffort` 取 `session.requestHeader().config`，与原对话一致；
-4. 不传 `tools`（只整理，不调工具），`maxTokens: 256`。
+4. 不传 `tools`（只整理，不调工具），也不设 `maxTokens`：用模型默认输出预算。
 
 system、历史消息、模型都和当前对话一致，只有末尾多一条，因此前面的 KV cache 前缀全部命中。
+
+> `maxTokens` 早期设为 256，在高推理模型上会被 reasoning 全部吃掉、正文为空，已移除。`reasoningEffort` 沿用当前会话的取值，不硬编码——各模型的档位名不统一（DeepSeek 是 `low: low`，GLM 与 pi-ai 路由是 `low: light`）。
 
 ### 14.4 失败语义
 
@@ -502,3 +504,43 @@ system、历史消息、模型都和当前对话一致，只有末尾多一条�
 ### 14.5 测试
 
 新增 5 项 AI 整理断言：整理后文本落盘、请求 provider/model 沿用当前会话、消息前缀等于原对话 + 整理指令、末条含原话、请求无 tools 字段；以及模型失败拒绝写入、空结果拒绝写入。冒烟测试现 57 项。
+
+### 14.6 命令不阻塞：整理改走后台任务
+
+#### 问题
+
+斜杠命令在宿主侧是短事务。`CommandService.execute` 先写 `command/run`，`await` handler 后才写 `command/done`：
+
+```js
+const output = command.definition.handler(invocation)
+result = normalizeResult(parsed.name, await withAbort(Promise.resolve(output), signal))
+return settle(result)   // 这里才写 command/done
+```
+
+第 14 版把整段模型 stream 放在 handler 里 `await`，命令迟迟不结算，composer 处于「命令执行中」状态，输入框被锁。这与请求快慢无关：任何耗时都会锁住输入，长会话（system 文本几十万字符）会被放大成几十秒。
+
+#### 改法
+
+handler 立即返回，整理与写入交给后台任务：
+
+1. `ctx.jobs.start({ kind: 'rule-rewrite', label, owner, run })` 注册任务，`owner` 是当前会话 id；
+2. `run(job)` 必须**同步**返回 `{ cancel, done }`（`JobSpec` 契约），因此任务体 `runAdd` 是异步的，`run` 只挂 `.then` 不 `await`；
+3. `cancel` 只置一个布尔位，`rewriteRule` 每个 chunk 检查一次；
+4. `done` 永不 reject，失败也 resolve 成 `{ status: 'failed', detail }`；
+5. 结果用 `agent.followup(...)` 以一条 `[rule] …` 的 user 消息送回会话——`followup` 走 `next-turn` 并唤醒驱动，繁忙时排到下一步、空闲时开新一轮。`followup` 抛错时降级到 `inject`（`next-step`，不唤醒），再不行只记日志。
+
+断言依据：
+
+| 事实 | 来源 |
+|---|---|
+| handler 被 `await` 后才结算 | `CommandService.execute` 源码 |
+| `kind` 接受任意非空字符串 | `pty-send`、`workflow` 两处现存用法 |
+| 任务自带完成通知 | `dsh-tool-jobs` 对任意 kind 的归属任务结算都投递 notice |
+| `followup` = `send(msg, 'next-turn', true)` | `Agent.send` 实现 |
+| `ctx.agents.get(id)` 可取回 agent | bash、ptc 等工具的后台分支 |
+
+#### 退化路径
+
+`jobs` 或 `agents` 服务缺席（headless、精简组合），或配置 `backgroundRewrite: false` 时，`/rule add` 回到第 14 版的同步路径 `addRuleSync`。功能不丢，只是命令结算前输入框会被锁。
+
+两者共用 `writeAddResult`，回执文案只有一处。

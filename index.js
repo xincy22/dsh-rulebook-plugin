@@ -602,6 +602,49 @@ export function apply(ctx, config) {
     return { removed }
   }
 
+  /**
+   * 同步落盘并拼回执：同步路径与后台路径共用，避免回执文案两处维护。
+   * @returns {{kind: 'success'|'error', text: string}}
+   */
+  function writeAddResult(target, scope, finalText) {
+    try {
+      const result = addRule(target.file, finalText)
+      if (result.error) return { kind: 'error', text: result.error }
+      if (result.duplicate) {
+        return { kind: 'success', text: `已存在，未重复写入：${target.file}` }
+      }
+      const count = ruleLinesOf(bodyOf(readFileText(target.file))).length
+      const layerName = scope === 'workspace' ? 'workspace' : scope === 'session' ? 'session' : 'global'
+      const id = ruleIdOf(layerName, result.rule)
+      return {
+        kind: 'success',
+        text: `已写入${target.label}：${target.file}\n  整理后：${result.rule}\n  ID ${id}（该层现有 ${count} 条规则）`,
+      }
+    } catch (error) {
+      return {
+        kind: 'error',
+        text: `写入失败：${error && error.message ? error.message : String(error)}`,
+      }
+    }
+  }
+
+  /**
+   * 同步路径：整理原话后写入。整理失败一律拒绝写入，不写未经整理的原文。
+   * 后台任务不可用（缺 jobs/agents 服务，或 backgroundRewrite 关闭）时走这里。
+   */
+  async function addRuleSync(agent, target, scope, text, signal) {
+    let finalText
+    try {
+      finalText = await rewriteRule(text, agent, signal)
+    } catch (error) {
+      return {
+        kind: 'error',
+        text: `整理规则失败，未写入：${error && error.message ? error.message : String(error)}`,
+      }
+    }
+    return writeAddResult(target, scope, finalText)
+  }
+
   ctx.effect(() =>
     ctx.commands.register({
       name: cfg.commandName,
@@ -649,35 +692,7 @@ export function apply(ctx, config) {
           if (!rest) return { kind: 'error', text: `缺少规则文本。\n\n${HELP}` }
           const target = scopeOf(session, cwd, scope)
           if (target.error) return { kind: 'error', text: target.error }
-          // 先用当前会话模型整理原话；失败一律拒绝写入（不写未经整理的原文）。
-          let finalText
-          try {
-            finalText = await rewriteRule(rest, agent, invocation && invocation.signal)
-          } catch (error) {
-            return {
-              kind: 'error',
-              text: `整理规则失败，未写入：${error && error.message ? error.message : String(error)}`,
-            }
-          }
-          try {
-            const result = addRule(target.file, finalText)
-            if (result.error) return { kind: 'error', text: result.error }
-            if (result.duplicate) {
-              return { kind: 'success', text: `已存在，未重复写入：${target.file}` }
-            }
-            const count = ruleLinesOf(bodyOf(readFileText(target.file))).length
-            const layerName = scope === 'workspace' ? 'workspace' : scope === 'session' ? 'session' : 'global'
-            const id = ruleIdOf(layerName, result.rule)
-            return {
-              kind: 'success',
-              text: `已写入${target.label}：${target.file}\n  整理后：${result.rule}\n  ID ${id}（该层现有 ${count} 条规则）`,
-            }
-          } catch (error) {
-            return {
-              kind: 'error',
-              text: `写入失败：${error && error.message ? error.message : String(error)}`,
-            }
-          }
+          return addRuleSync(agent, target, scope, rest, invocation && invocation.signal)
         }
 
         if (sub === 'rm' || sub === 'remove' || sub === 'del') {

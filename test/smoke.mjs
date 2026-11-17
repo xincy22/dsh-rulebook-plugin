@@ -191,6 +191,37 @@ console.log('2. AI 整理：前缀复用 / 失败拒绝')
   rmSync(app.dir, { recursive: true, force: true })
 }
 
+{
+  // 后台路径：start 被调用、run 同步执行、handler 立即返回、回执经 followup 到达
+  const received = []
+  const followups = []
+  const jobs = {
+    start(spec) {
+      received.push(spec)
+      const completion = Promise.withResolvers()
+      const hooks = spec.run({ id: 'rule-rewrite-1', append() {}, updateProgress() {} })
+      followups.push(hooks)
+      return 'rule-rewrite-1'
+    },
+  }
+  const app = make({}, 'echo', null, { jobs })
+  app.agent.followup = (m) => followups.push(m)
+  const r = await app.run('add 后台整理')
+  check('后台路径 handler 立即返回 success', r.kind === 'success', JSON.stringify(r))
+  check('回执提示已开始整理', r.text.includes('已开始整理'), r.text)
+  check('返回时规则文件尚未写入（异步）', !existsSync(join(app.dir, 'global.md')))
+  check('jobs.start 收到 kind=rule-rewrite', received[0] && received[0].kind === 'rule-rewrite', JSON.stringify(received[0] && received[0].kind))
+  check('jobs.start 收到 owner=会话 id', received[0] && received[0].owner === app.agent.id, JSON.stringify(received[0] && received[0].owner))
+  check('run 同步返回 cancel 与 done', followups[0] && typeof followups[0].cancel === 'function' && followups[0].done, JSON.stringify(Object.keys(followups[0] || {})))
+  const outcome = await followups[0].done
+  check('done 结算为 completed', outcome.status === 'completed', JSON.stringify(outcome))
+  check('整理后写入文件', existsSync(join(app.dir, 'global.md')) && readFileSync(join(app.dir, 'global.md'), 'utf8').includes('- 后台整理'))
+  const msgs = followups.filter((x) => typeof x === 'object' && 'content' in x)
+  check('回执经 followup 到达会话', msgs.length > 0, JSON.stringify(msgs.length))
+  check('回执含已写入与 ID', msgs[0] && msgs[0].content[0].text.includes('已写入') && /[gws]:[0-9a-f]{6}/.test(msgs[0].content[0].text), msgs[0] && msgs[0].content[0].text)
+  rmSync(app.dir, { recursive: true, force: true })
+}
+
 // ---------------------------------------------------------------- 3. rm 按 ID
 console.log('3. rm 按 ID 删除')
 {

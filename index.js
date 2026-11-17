@@ -542,7 +542,7 @@ export function apply(ctx, config) {
    * 失败一律抛出，由调用方拒绝写入。
    * @returns {Promise<string>} 整理后的单行规则
    */
-  async function rewriteRule(text, agent, signal) {
+  async function rewriteRule(text, agent, signal, isCancelled) {
     const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined
     if (!llm || typeof llm.stream !== 'function') {
       throw new Error('模型服务不可用，无法整理规则')
@@ -571,6 +571,7 @@ export function apply(ctx, config) {
       ...signal === void 0 ? {} : { signal },
     })) {
       if (signal && signal.aborted) throw new Error('整理被取消')
+      if (typeof isCancelled === 'function' && isCancelled()) throw new Error('整理被取消')
       if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') {
         out += chunk.text
         continue
@@ -657,6 +658,97 @@ export function apply(ctx, config) {
   }
 
   /**
+   * 把结果作为一条 user 消息送回会话。
+   * followup 以 'next-turn' 入队并唤醒驱动；繁忙时排到下一步，空闲时开新一轮。
+   * 会话已关闭或 agent 已释放时可能抛，此时降级到 inject，再不行只记日志。
+   */
+  function deliverResult(agent, text) {
+    const body = `[rule] ${text}`
+    const build = () => ({
+      id: `rule-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      role: 'user',
+      content: [{ type: 'text', text: body }],
+      source: { kind: 'user' },
+    })
+    for (const method of ['followup', 'inject']) {
+      try {
+        if (agent && typeof agent[method] === 'function') {
+          agent[method](build())
+          return true
+        }
+      } catch {
+        // 落到下一个渠道
+      }
+    }
+    try {
+      if (ctx.logger && typeof ctx.logger.info === 'function') ctx.logger.info(body)
+    } catch {
+      // 无日志服务时放弃
+    }
+    return false
+  }
+
+  /** 后台任务体：整理 → 写入 → 回执。失败一律不写。 */
+  async function runAdd({ agent, target, scope, text, job, isCancelled }) {
+    try {
+      job.updateProgress('正在整理')
+    } catch {
+      // 进度行失败不影响整理
+    }
+    let finalText
+    try {
+      finalText = await rewriteRule(text, agent, undefined, isCancelled)
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error)
+      deliverResult(agent, `整理规则失败，未写入：${message}`)
+      return { ok: false, message }
+    }
+    try {
+      job.updateProgress('正在写入')
+    } catch {
+      // 进度行失败不影响写入
+    }
+    const result = writeAddResult(target, scope, finalText)
+    deliverResult(agent, result.text)
+    return result.kind === 'success' ? { ok: true, message: result.text } : { ok: false, message: result.text }
+  }
+
+  /**
+   * 启动后台整理任务。命令 handler 立即返回，整理与写入在任务里继续。
+   * JobSpec 契约：run 必须同步返回 { cancel, done }；done 不能 reject。
+   */
+  function startBackgroundAdd({ jobs, agent, target, scope, text }) {
+    let cancelled = false
+    const completion = Promise.withResolvers()
+    let jobId
+    try {
+      jobId = jobs.start({
+        kind: 'rule-rewrite',
+        label: `/rule add ${target.label}`,
+        owner: String(agent.id),
+        run: (job) => {
+          runAdd({ agent, target, scope, text, job, isCancelled: () => cancelled }).then(
+            (outcome) => completion.resolve(outcome),
+            (error) => completion.resolve({ ok: false, message: error && error.message ? error.message : String(error) }),
+          )
+          return {
+            cancel: () => {
+              cancelled = true
+            },
+            done: completion.promise.then((outcome) => ({
+              status: cancelled && !outcome.ok ? 'killed' : outcome.ok ? 'completed' : 'failed',
+              ...(outcome.ok ? {} : { detail: outcome.message }),
+            })),
+          }
+        },
+      })
+    } catch (error) {
+      return { error: `无法启动后台整理：${error && error.message ? error.message : String(error)}` }
+    }
+    return { jobId: String(jobId) }
+  }
+
+  /**
    * 同步路径：整理原话后写入。整理失败一律拒绝写入，不写未经整理的原文。
    * 后台任务不可用（缺 jobs/agents 服务，或 backgroundRewrite 关闭）时走这里。
    */
@@ -720,7 +812,16 @@ export function apply(ctx, config) {
           if (!rest) return { kind: 'error', text: `缺少规则文本。\n\n${HELP}` }
           const target = scopeOf(session, cwd, scope)
           if (target.error) return { kind: 'error', text: target.error }
-          return addRuleSync(agent, target, scope, rest, invocation && invocation.signal)
+          const jobs = cfg.backgroundRewrite ? jobsOf() : undefined
+          if (!jobs || !agent || typeof agent.id !== 'string') {
+            return addRuleSync(agent, target, scope, rest, invocation && invocation.signal)
+          }
+          const started = startBackgroundAdd({ jobs, agent, target, scope, text: rest })
+          if (started.error) return { kind: 'error', text: started.error }
+          return {
+            kind: 'success',
+            text: `已开始整理规则（后台执行），结果稍后出现在会话中。\n  目标：${target.label}  ${target.file}\n  任务 ${started.jobId}`,
+          }
         }
 
         if (sub === 'rm' || sub === 'remove' || sub === 'del') {

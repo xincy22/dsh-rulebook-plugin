@@ -45,7 +45,7 @@ function mockLlm(mode = 'echo', sink = null) {
 }
 
 /** 每个用例一套独立实例，避免配置互相污染。 */
-function make(cfg = {}, llmMode = 'echo', sink = null) {
+function make(cfg = {}, llmMode = 'echo', sink = null, extras = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-rulebook-smoke-'))
   const session = {
     id: 'session-test-1',
@@ -64,13 +64,18 @@ function make(cfg = {}, llmMode = 'echo', sink = null) {
   const ctx = {
     effect: (fn) => fn(),
     inject: (_deps, cb) => { cb({ workingDirectory: { get: () => CWD } }); return () => {} },
-    get: (name) => (name === 'llm' ? llm : undefined),
     systemPrompt: { section: (s) => { section = s; return () => {} } },
     commands: { register: (d) => { command = d; return () => {} } },
     tools: { guard: (g) => { guard = g; return () => {} } },
     sessions: { get: (id) => (id === session.id ? session : undefined) },
     workingDirectory: { get: () => CWD },
     on: () => () => {},
+    get: (name) => {
+      if (name === 'llm') return llm
+      if (name === 'jobs') return extras.jobs
+      if (name === 'agents') return extras.agents
+      return undefined
+    },
   }
   apply(ctx, { rulebookDir: dir, ...cfg })
   const run = (rawInput) => command.handler({ rawInput, agent })
@@ -173,6 +178,16 @@ console.log('2. AI 整理：前缀复用 / 失败拒绝')
   const app = make({})
   const r = await app.run('add 记一条规则')
   check('有 llm 时正常（对照组）', r.kind === 'success', JSON.stringify(r))
+  rmSync(app.dir, { recursive: true, force: true })
+}
+
+{
+  // backgroundRewrite: false 时不启动后台任务，走同步路径
+  const jobs = { calls: 0, start() { this.calls += 1; throw new Error('should not start') } }
+  const app = make({ backgroundRewrite: false }, 'echo', null, { jobs })
+  const r = await app.run('add 同步路径')
+  check('backgroundRewrite=false 时 add 成功', r.kind === 'success', JSON.stringify(r))
+  check('backgroundRewrite=false 时不调 jobs.start', jobs.calls === 0, JSON.stringify(jobs.calls))
   rmSync(app.dir, { recursive: true, force: true })
 }
 

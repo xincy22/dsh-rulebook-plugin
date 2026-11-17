@@ -82,6 +82,7 @@ const DEFAULTS = {
   guardEnabled: true,
   guardedTools: ['write', 'edit', 'pwsh', 'terminal_send'],
   cleanupSessionFiles: false,
+  backgroundRewrite: true,
 }
 
 function dshHome() {
@@ -127,6 +128,7 @@ function readConfig(config, baseDir) {
     guardEnabled: c.guardEnabled !== false,
     guardedTools,
     cleanupSessionFiles: c.cleanupSessionFiles === true,
+    backgroundRewrite: c.backgroundRewrite !== false,
   }
 }
 
@@ -200,6 +202,32 @@ export function apply(ctx, config) {
     })
   } catch {
     // 服务缺席时退到 session.header.cwd
+  }
+
+  /**
+   * jobs / agents 是可选服务：headless 或精简组合里可能没有。
+   * 缺席时 /rule add 退回同步路径，功能不丢，只是命令结算前会锁住输入框。
+   * ctx.inject 的回调异步生效，所以每次取用时再兜一次 ctx.get。
+   */
+  let jobsService = null
+  let agentsService = null
+  try {
+    ctx.inject(['jobs', 'agents'], (child) => {
+      jobsService = child.jobs
+      agentsService = child.agents
+    })
+  } catch {
+    // 服务缺席时走同步路径
+  }
+
+  function jobsOf() {
+    const svc = jobsService || (typeof ctx.get === 'function' ? ctx.get('jobs') : undefined)
+    return svc && typeof svc.start === 'function' ? svc : undefined
+  }
+
+  function agentsOf() {
+    const svc = agentsService || (typeof ctx.get === 'function' ? ctx.get('agents') : undefined)
+    return svc && typeof svc.get === 'function' ? svc : undefined
   }
 
   /** mtime + size 缓存；提示上下文 provider 必须是同步的。 */

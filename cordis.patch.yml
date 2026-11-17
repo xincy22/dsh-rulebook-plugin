@@ -33,3 +33,6 @@
         # 会话被删除时是否清掉它的会话规则文件。默认关：误删用户数据不可逆，
         # 而残留的会话规则文件只在那个会话 id 再次成为当前会话时才会被读到。
         cleanupSessionFiles: false
+        # /rule add 的 AI 整理放入后台任务执行：命令 handler 立即返回，输入框不被锁。
+        # 关闭后退回同步执行，功能相同，但命令结算前输入框会被锁住。
+        backgroundRewrite: true

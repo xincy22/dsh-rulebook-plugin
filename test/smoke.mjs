@@ -50,7 +50,7 @@ function make(cfg = {}, llmMode = 'echo', sink = null) {
   const session = {
     id: 'session-test-1',
     header: { cwd: CWD },
-    requestHeader: () => ({ config: { provider: 'test', model: 'test' } }),
+    requestHeader: () => ({ config: { provider: 'test', model: 'test', reasoningEffort: 'xhigh' } }),
     deriveMessages: () => [
       { role: 'system', content: [{ type: 'text', text: 'system' }] },
       { role: 'user', content: [{ type: 'text', text: 'earlier context' }] },
@@ -163,7 +163,7 @@ console.log('2. AI 整理：前缀复用 / 失败拒绝')
   const app = make({}, 'echo', sink)
   const r = await app.run('add 记一条规则')
   const req = sink.req
-  check('整理请求不继承高推理档', req && (req.reasoningEffort === 'low' || req.reasoningEffort === 'light' || req.reasoningEffort === undefined), JSON.stringify(req && req.reasoningEffort))
+  check('整理请求沿用当前会话推理档（不硬编码）', req && req.reasoningEffort === 'xhigh', JSON.stringify(req && req.reasoningEffort))
   check('整理请求给足输出预算', req && req.maxTokens >= 2048, JSON.stringify(req && req.maxTokens))
   check('回执包含整理后文本', r.text.includes('整理后：'), r.text)
   rmSync(app.dir, { recursive: true, force: true })

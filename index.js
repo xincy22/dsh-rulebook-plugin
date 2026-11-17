@@ -537,9 +537,9 @@ export function apply(ctx, config) {
       provider: config.provider,
       model: config.model,
       messages,
-      // 整理只要一句话，不继承会话的高推理档：高推理模型会把 256 token 全花在 reasoning 上，
-      // 导致 text 输出为空。这里显式压到 low，并给足输出预算。
-      reasoningEffort: 'low',
+      // 沿用当前会话的推理档位（各模型档位名不统一，不硬编码）；只放宽输出预算，
+      // 避免高推理模型把 token 全花在 reasoning 后没有正文输出。
+      ...config.reasoningEffort === void 0 ? {} : { reasoningEffort: config.reasoningEffort },
       maxTokens: 2048,
       ...signal === void 0 ? {} : { signal },
     })) {

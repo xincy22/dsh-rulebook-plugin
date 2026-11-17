@@ -222,6 +222,45 @@ console.log('2. AI 整理：前缀复用 / 失败拒绝')
   rmSync(app.dir, { recursive: true, force: true })
 }
 
+{
+  // 后台路径：模型失败 → done=failed，文件不写，回执说明原因
+  const hooksHolder = []
+  const msgs = []
+  const jobs = { start(spec) { const h = spec.run({ id: 'j1', append() {}, updateProgress() {} }); hooksHolder.push(h); return 'j1' } }
+  const app = make({}, 'fail', null, { jobs })
+  app.agent.followup = (m) => msgs.push(m)
+  const r = await app.run('add 会失败的规则')
+  check('模型失败时 handler 仍立即返回 success', r.kind === 'success', JSON.stringify(r))
+  const outcome = await hooksHolder[0].done
+  check('模型失败时 done 结算 failed', outcome.status === 'failed', JSON.stringify(outcome))
+  check('模型失败时 detail 带原因', typeof outcome.detail === 'string' && outcome.detail.length > 0, JSON.stringify(outcome.detail))
+  check('模型失败时不写文件', !existsSync(join(app.dir, 'global.md')))
+  check('模型失败时回执说明未写入', msgs[0] && msgs[0].content[0].text.includes('整理规则失败，未写入'), msgs[0] && msgs[0].content[0].text)
+  rmSync(app.dir, { recursive: true, force: true })
+}
+{
+  // 后台路径：运行中 kill → done=killed，文件不写
+  const hooksHolder = []
+  const jobs = { start(spec) { const h = spec.run({ id: 'j2', append() {}, updateProgress() {} }); hooksHolder.push(h); return 'j2' } }
+  const app = make({}, 'echo', null, { jobs })
+  app.agent.followup = () => {}
+  await app.run('add 会被取消的规则')
+  hooksHolder[0].cancel()
+  const outcome = await hooksHolder[0].done
+  check('cancel 后 done 结算 killed', outcome.status === 'killed', JSON.stringify(outcome))
+  check('cancel 后不写文件', !existsSync(join(app.dir, 'global.md')))
+  rmSync(app.dir, { recursive: true, force: true })
+}
+{
+  // jobs.start 抛错（并发上限）→ handler 返回 error，不崩
+  const jobs = { start() { throw new Error('background job limit reached') } }
+  const app = make({}, 'echo', null, { jobs })
+  const r = await app.run('add 达到上限')
+  check('jobs.start 抛错时 handler 返回 error', r.kind === 'error', JSON.stringify(r))
+  check('错误文本含原因', r.text.includes('无法启动后台整理'), r.text)
+  rmSync(app.dir, { recursive: true, force: true })
+}
+
 // ---------------------------------------------------------------- 3. rm 按 ID
 console.log('3. rm 按 ID 删除')
 {
